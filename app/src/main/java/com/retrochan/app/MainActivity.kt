@@ -70,13 +70,13 @@ class MainActivity : AppCompatActivity() {
             list.addView(TextView(this).apply {
                 text = "${f.nameWithoutExtension}\n${Cores.systemName(f.name)}"
                 setTextColor(Color.WHITE); textSize = 16f; setPadding(30, 28, 30, 28)
-                setBackgroundColor(Color.parseColor("#221D33"))
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#221D33")); cornerRadius = 28f }
                 setOnClickListener { startActivity(Intent(this@MainActivity, GameActivity::class.java).putExtra("rom", f.absolutePath)) }
                 setOnLongClickListener {
                     AlertDialog.Builder(this@MainActivity).setTitle(f.nameWithoutExtension)
                         .setItems(arrayOf("Hapus game")) { _, _ -> f.delete(); refresh() }.show(); true
                 }
-            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 12 })
+            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 16 })
         }
     }
 
