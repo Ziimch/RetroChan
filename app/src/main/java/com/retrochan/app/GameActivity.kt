@@ -5,6 +5,9 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import androidx.activity.OnBackPressedCallback
 import android.view.*
 import android.widget.FrameLayout
 import android.widget.Toast
@@ -31,6 +34,9 @@ class GameActivity : AppCompatActivity() {
         val core = Cores.forFile(romFile.name) ?: return finish()
         val corePath = File(applicationInfo.nativeLibraryDir, "lib${core}_libretro_android.so").absolutePath
 
+        if (!File(corePath).exists()) { toast("Core $core tidak ditemukan di APK"); return finish() }
+        prefs.edit().putLong("played_${romFile.name}", System.currentTimeMillis()).apply()
+
         val data = GLRetroViewData(this).apply {
             coreFilePath = corePath
             gameFilePath = romFile.absolutePath
@@ -51,6 +57,9 @@ class GameActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         applyOrientation()
         applyLayout()
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() { showMenu() }
+        })
     }
 
     // ---------- Orientasi & layout ----------
@@ -118,14 +127,14 @@ class GameActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
         val gp = (e.source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
                 (e.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
-        if (gp && (KeyEvent.isGamepadButton(e.keyCode) || e.keyCode in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_CENTER)) {
+        if (::retro.isInitialized && gp && (KeyEvent.isGamepadButton(e.keyCode) || e.keyCode in KeyEvent.KEYCODE_DPAD_UP..KeyEvent.KEYCODE_DPAD_CENTER)) {
             retro.sendKeyEvent(e.action, e.keyCode); return true
         }
         return super.dispatchKeyEvent(e)
     }
 
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
-        if ((e.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
+        if (::retro.isInitialized && (e.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
             retro.sendMotionEvent(GLRetroView.MOTION_SOURCE_DPAD, e.getAxisValue(MotionEvent.AXIS_HAT_X), e.getAxisValue(MotionEvent.AXIS_HAT_Y))
             retro.sendMotionEvent(GLRetroView.MOTION_SOURCE_ANALOG_LEFT, e.getAxisValue(MotionEvent.AXIS_X), e.getAxisValue(MotionEvent.AXIS_Y))
             return true
@@ -133,9 +142,27 @@ class GameActivity : AppCompatActivity() {
         return super.onGenericMotionEvent(e)
     }
 
+    // ---------- Auto-save SRAM (save in-game) ----------
+    private val handler = Handler(Looper.getMainLooper())
+    private val autoSave = object : Runnable {
+        override fun run() { saveSram(); handler.postDelayed(this, 30_000) }
+    }
+
+    private fun saveSram() {
+        if (!::retro.isInitialized) return
+        runCatching { val b = retro.serializeSRAM(); if (b.isNotEmpty()) sramFile.writeBytes(b) }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::retro.isInitialized) handler.postDelayed(autoSave, 30_000)
+    }
+
     override fun onPause() {
         super.onPause()
+        handler.removeCallbacks(autoSave)
+        if (!::retro.isInitialized) return
         controls.releaseAll()
-        runCatching { sramFile.writeBytes(retro.serializeSRAM()) }
+        saveSram()
     }
 }

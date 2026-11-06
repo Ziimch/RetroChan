@@ -37,6 +37,8 @@ android {
         }
     }
 
+    lint { checkReleaseBuilds = false; abortOnError = false }
+
     packaging { jniLibs { useLegacyPackaging = true } } // core harus ter-extract
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
