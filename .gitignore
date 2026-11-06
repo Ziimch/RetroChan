@@ -1,5 +1,3 @@
-*.jks
-*.keystore
 build/
 .gradle/
 local.properties

@@ -27,15 +27,47 @@ jobs:
             mv tmp/${c}_libretro_android.so app/src/main/jniLibs/arm64-v8a/lib${c}_libretro_android.so
           done
 
-      - name: Decode keystore
-        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$GITHUB_WORKSPACE/retro-chan.jks"
+      # OTOMATIS: kunci dibuat sekali di build pertama, disimpan di repo (keystore/retro-chan.jks),
+      # lalu dipakai terus -> APK selalu bisa di-update tanpa install ulang.
+      # (Jika GitHub Secrets diisi lengkap, secrets yang dipakai.)
+      - name: Siapkan kunci tanda tangan (otomatis)
+        env:
+          S_KS: ${{ secrets.KEYSTORE_BASE64 }}
+          S_SP: ${{ secrets.KEYSTORE_PASSWORD }}
+          S_KA: ${{ secrets.KEY_ALIAS }}
+          S_KP: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$S_KS" ] && [ -n "$S_SP" ] && [ -n "$S_KA" ] && [ -n "$S_KP" ]; then
+            echo "Memakai kunci dari GitHub Secrets"
+            echo "$S_KS" | base64 -d > "$GITHUB_WORKSPACE/retro-chan.jks"
+            echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/retro-chan.jks" >> "$GITHUB_ENV"
+            echo "KEYSTORE_PASSWORD=$S_SP" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=$S_KA" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$S_KP" >> "$GITHUB_ENV"
+          else
+            PASS="RetroChan-2026-Key"
+            if [ ! -f keystore/retro-chan.jks ]; then
+              echo "Membuat kunci baru (sekali saja)..."
+              mkdir -p keystore
+              keytool -genkeypair -keystore keystore/retro-chan.jks -alias retrochan \
+                -keyalg RSA -keysize 2048 -validity 36500 \
+                -storepass "$PASS" -keypass "$PASS" \
+                -dname "CN=Retro-Chan, O=Retro-Chan, C=ID"
+              git config user.name "retro-chan-bot"
+              git config user.email "retro-chan-bot@users.noreply.github.com"
+              git add -f keystore/retro-chan.jks
+              git commit -m "Add signing keystore (auto-generated)"
+              git push origin HEAD:main
+            else
+              echo "Memakai kunci yang sudah ada di repo"
+            fi
+            echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/keystore/retro-chan.jks" >> "$GITHUB_ENV"
+            echo "KEYSTORE_PASSWORD=$PASS" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=retrochan" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$PASS" >> "$GITHUB_ENV"
+          fi
 
       - name: Build release APK
-        env:
-          KEYSTORE_PATH: ${{ github.workspace }}/retro-chan.jks
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle :app:assembleRelease
 
       - name: Rename APK

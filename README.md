@@ -1,22 +1,11 @@
 # Retro-Chan 🎮
-Emulator retro ringan: NES, SNES, GB/GBC, GBA, Genesis, Master System, Game Gear, PC Engine.
+Emulator retro ringan: NES, SNES, GB/GBC, GBA, Genesis, SMS, Game Gear, PC Engine.
 
-## 1. Buat keystore (SEKALI SAJA, simpan baik-baik!)
-    keytool -genkeypair -v -keystore retro-chan.jks -alias retrochan \
-      -keyalg RSA -keysize 2048 -validity 36500
-    base64 -w0 retro-chan.jks      # (Mac: base64 -i retro-chan.jks)
+## Build (otomatis, tanpa setting apa pun)
+1. Push project ke GitHub (branch `main`).
+2. Tab Actions → tunggu selesai → unduh artifact **Retro-Chan.apk**.
 
-## 2. GitHub → Settings → Secrets and variables → Actions
-| Secret | Isi |
-|---|---|
-| KEYSTORE_BASE64 | output base64 di atas |
-| KEYSTORE_PASSWORD | password keystore |
-| KEY_ALIAS | retrochan |
-| KEY_PASSWORD | password key |
+Build pertama membuat kunci tanda tangan otomatis dan menyimpannya di `keystore/retro-chan.jks`.
+Build berikutnya memakai kunci yang sama + versionCode naik otomatis => update tanpa install ulang.
 
-## 3. Build
-Push ke `main` → tab Actions → unduh artifact **Retro-Chan.apk**.
-Atau buat tag `v1.0.0` → APK muncul di Releases.
-versionCode otomatis naik tiap build + kunci yang sama = **update tanpa install ulang**.
-
-⚠️ Jika keystore hilang/diganti, APK tidak bisa di-update (harus uninstall). BACKUP file .jks!
+⚠️ Gunakan repo **Private** (kunci ada di repo). Jangan hapus folder `keystore/`.
