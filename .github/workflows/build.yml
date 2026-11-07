@@ -23,13 +23,31 @@ jobs:
         with: { gradle-version: "8.7" }
 
       - name: Download emulator cores (libretro)
+        shell: bash
         run: |
-          mkdir -p app/src/main/jniLibs/arm64-v8a tmp
-          for c in fceumm snes9x gambatte mgba genesis_plus_gx mednafen_pce_fast; do
-            curl -fL -o tmp/$c.zip "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/${c}_libretro_android.so.zip"
-            unzip -o tmp/$c.zip -d tmp
-            mv tmp/${c}_libretro_android.so app/src/main/jniLibs/arm64-v8a/lib${c}_libretro_android.so
-          done
+          D=app/src/main/jniLibs/arm64-v8a
+          mkdir -p $D tmp
+          fetch() {
+            c=$1
+            if curl -fsSL --retry 3 --retry-delay 2 -o tmp/$c.zip "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/${c}_libretro_android.so.zip" \
+               && unzip -oq tmp/$c.zip -d tmp \
+               && [ -s tmp/${c}_libretro_android.so ] \
+               && head -c4 tmp/${c}_libretro_android.so | grep -q ELF; then
+              mv tmp/${c}_libretro_android.so $D/lib${c}_libretro_android.so
+              echo "OK      $c"
+            else
+              echo "::warning::Core $c tidak tersedia, dilewati"
+            fi
+          }
+          # inti (wajib)
+          for c in fceumm snes9x gambatte mgba genesis_plus_gx mednafen_pce_fast; do fetch $c; done
+          # tambahan (dilewati bila tidak tersedia)
+          for c in prosystem handy mednafen_ngp mednafen_wswan picodrive mednafen_supergrafx pcsx_rearmed mupen64plus_next_gles3; do fetch $c; done
+          fetch stella
+          [ -f $D/libstella_libretro_android.so ] || fetch stella2014
+          echo "Core terpasang:"; ls -1 $D
+          n=$(ls -1 $D | wc -l)
+          if [ "$n" -lt 4 ]; then echo "::error::Terlalu sedikit core berhasil diunduh ($n)"; exit 1; fi
 
       # Kunci tanda tangan dibuat OTOMATIS sekali, disimpan di branch terpisah "signing-keystore"
       # (tidak bentrok dengan push kamu ke branch lain). Build berikutnya memakai kunci yang sama.

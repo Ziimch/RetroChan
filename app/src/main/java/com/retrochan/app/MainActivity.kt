@@ -42,13 +42,31 @@ class MainActivity : AppCompatActivity() {
         "Internet Archive – homebrew" to "https://archive.org/search?query=homebrew+rom&sort=-downloads"
     )
 
+    private var diagShown = false
+
+    private val biosPicker = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@registerForActivityResult
+        thread {
+            var n = 0
+            uris.forEach { u ->
+                val name = nameOf(u)
+                if (name != null && runCatching {
+                        contentResolver.openInputStream(u)?.use { i ->
+                            File(Roms.systemDir(this), File(name).name).outputStream().use { o -> i.copyTo(o) }
+                        }
+                    }.isSuccess) n++
+            }
+            runOnUiThread { toast("$n file BIOS diimpor") }
+        }
+    }
+
     private val picker = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isEmpty()) return@registerForActivityResult
         toast("Mengimpor…")
         thread {
             var ok = 0
             uris.forEach { if (runCatching { importUri(it) }.getOrDefault(false)) ok++ }
-            runOnUiThread { refresh(); toast(if (ok > 0) "$ok game ditambahkan" else "Format tidak didukung") }
+            runOnUiThread { refresh(); toast(if (ok > 0) "$ok game ditambahkan" else "Format tidak didukung / file rusak (zip didukung, 7z & rar belum)") }
         }
     }
 
@@ -60,6 +78,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Cores.init(this)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(16), dp(18), dp(10)) }
 
         // Header: logo + judul
@@ -108,7 +127,36 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
     }
 
-    override fun onResume() { super.onResume(); refresh() }
+    override fun onResume() { super.onResume(); refresh(); checkDiagnostics() }
+
+    // ---------- Diagnostik: crash & game berhenti tiba-tiba ----------
+    private fun checkDiagnostics() {
+        val flag = File(filesDir, "run.flag")
+        if (flag.exists()) {
+            val g = runCatching { flag.readText() }.getOrDefault("")
+            flag.delete()
+            Toast.makeText(this, "Game “$g” berhenti tiba-tiba. Core/ROM mungkin tidak cocok.", Toast.LENGTH_LONG).show()
+        }
+        val log = File(filesDir, "crash.log")
+        if (!diagShown && log.exists() && log.length() > 0) {
+            diagShown = true
+            val text = runCatching { log.readText().takeLast(20000) }.getOrDefault("")
+            AlertDialog.Builder(this).setTitle("Aplikasi sempat berhenti")
+                .setMessage("Ada catatan error dari sesi sebelumnya. Bagikan untuk membantu perbaikan?")
+                .setPositiveButton("Bagikan") { _, _ ->
+                    startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_TEXT, text), "Bagikan log"))
+                }
+                .setNegativeButton("Tutup", null)
+                .setOnDismissListener { log.delete(); diagShown = false }
+                .show()
+        }
+    }
+
+    private fun nameOf(uri: Uri): String? = contentResolver.query(uri, null, null, null, null)?.use {
+        val i = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (i >= 0 && it.moveToFirst()) it.getString(i) else null
+    } ?: uri.lastPathSegment
 
     private fun pill(label: String, primary: Boolean, onClick: () -> Unit) = TextView(this).apply {
         text = label; gravity = Gravity.CENTER; textSize = 14f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
@@ -119,16 +167,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun importUri(uri: Uri): Boolean {
-        val name = contentResolver.query(uri, null, null, null, null)?.use {
-            val i = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            if (i >= 0 && it.moveToFirst()) it.getString(i) else null
-        } ?: uri.lastPathSegment ?: return false
+        val name = nameOf(uri) ?: return false
         return contentResolver.openInputStream(uri)?.use { Roms.importStream(this, name, it) } != null
     }
 
     private fun refresh() {
         list.removeAllViews()
-        val all = Roms.dir(this).listFiles()?.filter { Cores.forFile(it.name) != null } ?: emptyList()
+        val all = Roms.dir(this).listFiles()?.filter { Roms.isRom(it) } ?: emptyList()
         val roms = all.filter { it.nameWithoutExtension.contains(query, true) }
             .sortedWith(compareByDescending<File> { prefs.getLong("played_${it.name}", 0L) }.thenBy { it.name.lowercase() })
         counter.text = "${roms.size} game"
@@ -144,22 +189,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun card(f: File): View {
+        val core = Cores.coreFor(f.name, f.length())
         val row = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL; background = rounded(cCard, 18)
             setPadding(dp(14), dp(12), dp(14), dp(12)); isClickable = true
-            setOnClickListener { startActivity(Intent(this@MainActivity, GameActivity::class.java).putExtra("rom", f.absolutePath)) }
+            setOnClickListener {
+                prefs.edit().putLong("played_${f.name}", System.currentTimeMillis()).apply()
+                startActivity(Intent(this@MainActivity, GameActivity::class.java).putExtra("rom", f.absolutePath))
+            }
             setOnLongClickListener { confirmDelete(f); true }
         }
         row.addView(TextView(this).apply {
-            text = Cores.badge(f.name); gravity = Gravity.CENTER; setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD; textSize = 11f; background = rounded(Cores.color(f.name), 12)
+            text = Cores.badge(core); gravity = Gravity.CENTER; setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD; textSize = 10.5f; background = rounded(Cores.color(core), 12)
         }, LinearLayout.LayoutParams(dp(50), dp(50)))
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), 0, dp(8), 0) }
         col.addView(TextView(this).apply {
             text = f.nameWithoutExtension; textSize = 16f; setTextColor(Color.WHITE); maxLines = 2; ellipsize = TextUtils.TruncateAt.END
         })
         col.addView(TextView(this).apply {
-            text = "${Cores.systemName(f.name)}  •  ${"%.1f".format(f.length() / 1048576.0)} MB"; textSize = 12f; setTextColor(cMuted)
+            text = "${Cores.systemName(f.name, f.length())}  •  ${"%.1f".format(f.length() / 1048576.0)} MB" +
+                if (Cores.isHeavy(core)) "  •  ⚠ berat" else ""
+            textSize = 12f; setTextColor(cMuted)
         })
         row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(TextView(this).apply { text = "▶"; textSize = 18f; setTextColor(cPink) })
@@ -176,9 +227,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSources() {
-        val items = arrayOf("⬇  Unduh dari link langsung…") + sources.map { it.first }
+        val items = arrayOf("⬇  Unduh dari link langsung…", "📥  Impor BIOS (PS1, dll)…", "ℹ  Format yang didukung") + sources.map { it.first }
         AlertDialog.Builder(this).setTitle("Cari / Unduh game").setItems(items) { _, i ->
-            if (i == 0) askUrl() else startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(sources[i - 1].second)))
+            when (i) {
+                0 -> askUrl()
+                1 -> biosPicker.launch(arrayOf("*/*"))
+                2 -> AlertDialog.Builder(this).setTitle("Format didukung")
+                    .setMessage(Cores.summary().joinToString("\n\n") + "\n\n.zip berisi ROM otomatis diekstrak.\nGame CD (PS1): tambahkan .cue + .bin sekaligus, atau pakai .chd.")
+                    .setPositiveButton("OK", null).show()
+                else -> startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(sources[i - 3].second)))
+            }
         }.show()
     }
 

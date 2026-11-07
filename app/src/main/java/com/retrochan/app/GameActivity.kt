@@ -35,11 +35,12 @@ class GameActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Cores.init(this)
         romFile = File(intent.getStringExtra("rom") ?: return finish())
-        val core = Cores.forFile(romFile.name) ?: return finish()
+        val core = Cores.coreFor(romFile.name, romFile.length()) ?: run { toast("Format/core tidak tersedia"); return finish() }
         val corePath = File(applicationInfo.nativeLibraryDir, "lib${core}_libretro_android.so").absolutePath
         if (!File(corePath).exists()) { toast("Core $core tidak ditemukan di APK"); return finish() }
-        prefs.edit().putLong("played_${romFile.name}", System.currentTimeMillis()).apply()
+        runCatching { File(filesDir, "run.flag").writeText(romFile.nameWithoutExtension) }
 
         val data = GLRetroViewData(this).apply {
             coreFilePath = corePath
@@ -136,12 +137,10 @@ class GameActivity : AppCompatActivity() {
             "✖  Keluar")
         AlertDialog.Builder(this).setTitle(romFile.nameWithoutExtension).setItems(items) { _, i ->
             when (i) {
-                1 -> { quick().writeBytes(retro.serializeState()); toast("Tersimpan") }
-                2 -> if (quick().exists()) { retro.unserializeState(quick().readBytes()); toast("Dimuat") } else toast("Belum ada simpanan cepat")
-                3 -> pickSlot("Simpan ke slot") { n -> slot(n).writeBytes(retro.serializeState()); toast("Tersimpan di slot $n") }
-                4 -> pickSlot("Muat dari slot") { n ->
-                    if (slot(n).exists()) { retro.unserializeState(slot(n).readBytes()); toast("Slot $n dimuat") } else toast("Slot $n kosong")
-                }
+                1 -> saveState(quick())
+                2 -> loadState(quick())
+                3 -> pickSlot("Simpan ke slot") { n -> saveState(slot(n)) }
+                4 -> pickSlot("Muat dari slot") { n -> loadState(slot(n)) }
                 5 -> { setSpeed(speed % 3 + 1); toast("Kecepatan ${speed}x") }
                 6 -> { muted = !muted; retro.audioEnabled = !muted; toast("Suara ${onOff(!muted)}") }
                 7 -> pickOrientation()
@@ -150,6 +149,21 @@ class GameActivity : AppCompatActivity() {
                 10 -> finish()
             }
         }.show()
+    }
+
+    private fun saveState(f: File) {
+        val ok = runCatching {
+            val b = retro.serializeState()
+            check(b.isNotEmpty())
+            val t = File(f.path + ".tmp"); t.writeBytes(b); f.delete(); check(t.renameTo(f))
+        }.isSuccess
+        toast(if (ok) "Tersimpan" else "Core ini tidak mendukung save state")
+    }
+
+    private fun loadState(f: File) {
+        if (!f.exists()) { toast("Slot kosong"); return }
+        val ok = runCatching { retro.unserializeState(f.readBytes()) }.getOrDefault(false)
+        toast(if (ok) "Dimuat" else "Gagal memuat state")
     }
 
     private fun pickSlot(title: String, action: (Int) -> Unit) {
@@ -218,7 +232,9 @@ class GameActivity : AppCompatActivity() {
         if (!::retro.isInitialized) return
         runCatching {
             val b = retro.serializeSRAM()
-            if (b.isNotEmpty() && !b.contentEquals(lastSram)) { sramFile.writeBytes(b); lastSram = b }
+            if (b.isNotEmpty() && !b.contentEquals(lastSram)) {
+                val t = File(sramFile.path + ".tmp"); t.writeBytes(b); sramFile.delete(); t.renameTo(sramFile); lastSram = b
+            }
         }
     }
 
@@ -230,8 +246,20 @@ class GameActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         handler.removeCallbacks(autoSave)
+        if (isFinishing) File(filesDir, "run.flag").delete()   // keluar normal
         if (!::retro.isInitialized) return
         controls.releaseAll()
         saveSram()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_RUNNING_CRITICAL) saveSram()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // proses game dimatikan agar state native core bersih untuk game berikutnya
+        if (isFinishing) android.os.Process.killProcess(android.os.Process.myPid())
     }
 }
