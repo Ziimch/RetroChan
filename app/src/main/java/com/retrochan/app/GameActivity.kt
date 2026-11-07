@@ -7,10 +7,10 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import androidx.activity.OnBackPressedCallback
 import android.view.*
 import android.widget.FrameLayout
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
@@ -18,6 +18,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.swordfish.libretrodroid.GLRetroView
 import com.swordfish.libretrodroid.GLRetroViewData
+import com.swordfish.libretrodroid.ShaderConfig
 import java.io.File
 
 class GameActivity : AppCompatActivity() {
@@ -28,12 +29,15 @@ class GameActivity : AppCompatActivity() {
     private val saveDir get() = File(filesDir, "saves/${romFile.nameWithoutExtension}").apply { mkdirs() }
     private val sramFile get() = File(saveDir, "game.srm")
 
+    private var speed = 1
+    private var muted = false
+    private var lastSram: ByteArray? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        romFile = File(intent.getStringExtra("rom")!!)
+        romFile = File(intent.getStringExtra("rom") ?: return finish())
         val core = Cores.forFile(romFile.name) ?: return finish()
         val corePath = File(applicationInfo.nativeLibraryDir, "lib${core}_libretro_android.so").absolutePath
-
         if (!File(corePath).exists()) { toast("Core $core tidak ditemukan di APK"); return finish() }
         prefs.edit().putLong("played_${romFile.name}", System.currentTimeMillis()).apply()
 
@@ -42,14 +46,17 @@ class GameActivity : AppCompatActivity() {
             gameFilePath = romFile.absolutePath
             systemDirectory = File(filesDir, "system").apply { mkdirs() }.absolutePath
             savesDirectory = saveDir.absolutePath
-            if (sramFile.exists()) saveRAMState = sramFile.readBytes()
+            shader = when (prefs.getInt("shader", 0)) { 1 -> ShaderConfig.CRT; 2 -> ShaderConfig.LCD; else -> ShaderConfig.Default }
+            if (sramFile.exists()) { lastSram = sramFile.readBytes(); saveRAMState = lastSram }
         }
         retro = GLRetroView(this, data)
         lifecycle.addObserver(retro)
 
         controls = ControlsView(this,
             { k, down -> retro.sendKeyEvent(if (down) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP, k) },
-            { showMenu() })
+            { showMenu() },
+            { setSpeed(if (speed == 1) 2 else 1) })
+        applyControlPrefs()
 
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         root.addView(retro); root.addView(controls)
@@ -60,6 +67,15 @@ class GameActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { showMenu() }
         })
+    }
+
+    // ---------- Pengaturan kontrol ----------
+    private fun applyControlPrefs() {
+        controls.scale = floatArrayOf(0.85f, 1f, 1.15f)[prefs.getInt("scale_idx", 1)]
+        controls.alphaLevel = intArrayOf(80, 120, 180)[prefs.getInt("alpha_idx", 1)]
+        controls.haptic = prefs.getBoolean("haptic", true)
+        controls.leftHanded = prefs.getBoolean("lefty", false)
+        controls.turbo = prefs.getBoolean("turbo", false)
     }
 
     // ---------- Orientasi & layout ----------
@@ -91,21 +107,47 @@ class GameActivity : AppCompatActivity() {
         applyLayout()
     }
 
+    // ---------- Kecepatan & suara ----------
+    private fun setSpeed(n: Int) {
+        speed = n
+        retro.frameSpeed = n
+        controls.ffActive = n > 1
+    }
+
     // ---------- Menu ----------
     private fun slot(n: Int) = File(saveDir, "state$n.sav")
+    private fun quick() = File(saveDir, "quick.sav")
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+    private fun onOff(b: Boolean) = if (b) "Hidup" else "Mati"
 
     private fun showMenu() {
-        val items = arrayOf("💾  Simpan State", "📂  Muat State", "🔄  Orientasi Layar", "↺  Reset Game", "✖  Keluar")
+        controls.releaseAll()
+        val items = arrayOf(
+            "▶  Lanjutkan",
+            "⚡  Simpan Cepat",
+            "⚡  Muat Cepat",
+            "💾  Simpan State (3 slot)",
+            "📂  Muat State (3 slot)",
+            "⏩  Kecepatan: ${speed}x",
+            "🔊  Suara: ${onOff(!muted)}",
+            "🔄  Orientasi Layar",
+            "⚙  Pengaturan Kontrol & Layar",
+            "↺  Reset Game",
+            "✖  Keluar")
         AlertDialog.Builder(this).setTitle(romFile.nameWithoutExtension).setItems(items) { _, i ->
             when (i) {
-                0 -> pickSlot("Simpan ke slot") { n -> slot(n).writeBytes(retro.serializeState()); toast("Tersimpan di slot $n") }
-                1 -> pickSlot("Muat dari slot") { n ->
+                1 -> { quick().writeBytes(retro.serializeState()); toast("Tersimpan") }
+                2 -> if (quick().exists()) { retro.unserializeState(quick().readBytes()); toast("Dimuat") } else toast("Belum ada simpanan cepat")
+                3 -> pickSlot("Simpan ke slot") { n -> slot(n).writeBytes(retro.serializeState()); toast("Tersimpan di slot $n") }
+                4 -> pickSlot("Muat dari slot") { n ->
                     if (slot(n).exists()) { retro.unserializeState(slot(n).readBytes()); toast("Slot $n dimuat") } else toast("Slot $n kosong")
                 }
-                2 -> pickOrientation()
-                3 -> retro.reset()
-                4 -> finish()
+                5 -> { setSpeed(speed % 3 + 1); toast("Kecepatan ${speed}x") }
+                6 -> { muted = !muted; retro.audioEnabled = !muted; toast("Suara ${onOff(!muted)}") }
+                7 -> pickOrientation()
+                8 -> showSettings()
+                9 -> retro.reset()
+                10 -> finish()
             }
         }.show()
     }
@@ -121,6 +163,30 @@ class GameActivity : AppCompatActivity() {
             .setSingleChoiceItems(names, prefs.getInt("orient", 0)) { d, i ->
                 prefs.edit().putInt("orient", i).apply(); applyOrientation(); d.dismiss()
             }.show()
+    }
+
+    private fun cycle(key: String, n: Int, def: Int) = prefs.edit().putInt(key, (prefs.getInt(key, def) + 1) % n).apply()
+    private fun toggle(key: String, def: Boolean) = prefs.edit().putBoolean(key, !prefs.getBoolean(key, def)).apply()
+
+    private fun showSettings() {
+        val items = arrayOf(
+            "Ukuran tombol: ${arrayOf("Kecil", "Sedang", "Besar")[prefs.getInt("scale_idx", 1)]}",
+            "Transparansi (lanskap): ${arrayOf("Tinggi", "Sedang", "Rendah")[prefs.getInt("alpha_idx", 1)]}",
+            "Getar tombol: ${onOff(prefs.getBoolean("haptic", true))}",
+            "Posisi tombol: ${if (prefs.getBoolean("lefty", false)) "Kidal" else "Normal"}",
+            "Turbo A/B (tahan tombol): ${onOff(prefs.getBoolean("turbo", false))}",
+            "Filter layar: ${arrayOf("Normal", "CRT", "LCD")[prefs.getInt("shader", 0)]}  (berlaku saat game dibuka ulang)")
+        AlertDialog.Builder(this).setTitle("Pengaturan").setItems(items) { _, i ->
+            when (i) {
+                0 -> cycle("scale_idx", 3, 1)
+                1 -> cycle("alpha_idx", 3, 1)
+                2 -> toggle("haptic", true)
+                3 -> toggle("lefty", false)
+                4 -> toggle("turbo", false)
+                5 -> cycle("shader", 3, 0)
+            }
+            applyControlPrefs(); showSettings()
+        }.setPositiveButton("Selesai", null).show()
     }
 
     // ---------- Gamepad fisik / Bluetooth ----------
@@ -150,7 +216,10 @@ class GameActivity : AppCompatActivity() {
 
     private fun saveSram() {
         if (!::retro.isInitialized) return
-        runCatching { val b = retro.serializeSRAM(); if (b.isNotEmpty()) sramFile.writeBytes(b) }
+        runCatching {
+            val b = retro.serializeSRAM()
+            if (b.isNotEmpty() && !b.contentEquals(lastSram)) { sramFile.writeBytes(b); lastSram = b }
+        }
     }
 
     override fun onResume() {
